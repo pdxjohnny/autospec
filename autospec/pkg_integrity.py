@@ -97,7 +97,7 @@ class GPGCli(object):
         self.args = ['gpg', '--homedir', _gpghome]
         util.write_out(os.path.join(_gpghome, 'gpg.conf'), GNUPGCONF)
         if pubkey is not None:
-            args = self.args + ['--import', pubkey]
+            args = self.args + ['--import'] + pubkey
             output, err, code = self.exec_cmd(args)
             if code == -9:
                 raise Exception('Command {} timeout after {} seconds'.format(' '.join(args), CMD_TIMEOUT))
@@ -469,7 +469,7 @@ class GPGVerifier(Verifier):
             msg = "Unable to download file {}"
             self.print_result(False, msg.format(self.key_url))
 
-    def verify(self, recursion=False):
+    def verify(self):
         """Verify file using gpg signature."""
         global KEYID
         global EMAIL
@@ -487,34 +487,45 @@ class GPGVerifier(Verifier):
             except Exception:
                 pass
             return None
+
         # valid signature exists at package_sign_path, operate on it now
-        keyid = get_keyid(self.package_sign_path)
-        # default location first
-        pubkey_loc = self.pubkey_path.format(keyid)
-        if not os.path.exists(pubkey_loc):
-            # attempt import the key interactively if set to do so
-            self.print_result(False, 'Public key {} not found'.format(keyid))
-            if not self.interactive or recursion:
-                return None
-            if attempt_key_import(keyid, self.pubkey_path.format(keyid)):
-                print(SEPT)
-                return self.verify(recursion=True)
-            return None
-        # public key exists or is imported, verify
-        EMAIL = parse_key(pubkey_loc, r':user ID packet: ".* <(.+?)>"\n')
-        sign_status = verify_cli(pubkey_loc, self.package_path, self.package_sign_path)
-        if not sign_status:
-            if config.old_keyid:
-                compare_keys(KEYID_TRY, config.old_keyid)
-            self.print_result(self.package_path)
-            KEYID = KEYID_TRY
-            config.signature = self.key_url
-            config.config_opts['verify_required'] = True
-            config.rewrite_config_opts(os.path.dirname(self.package_path))
-            return True
-        else:
+        # loop over keys
+        key_locs = []
+        for i in range(10):
+            keyid = get_keyid(self.package_sign_path, i)
+            if not keyid:
+                break
+            # default location first
+            pubkey_loc = self.pubkey_path.format(keyid)
+            if not os.path.exists(pubkey_loc):
+                # attempt import the key interactively if set to do so
+                self.print_result(False, 'Public key {} not found'.format(keyid))
+                if not self.interactive:
+                    continue
+                if attempt_key_import(keyid, pubkey_loc):
+                    print(SEPT)
+                    key_locs.append(pubkey_loc)
+                else:
+                    continue
+            else:
+                key_locs.append(pubkey_loc)
+
+        # public keys exists or are imported
+        sign_status = verify_cli(key_locs, self.package_path, self.package_sign_path)
+        if sign_status:
             self.print_result(False, err_msg=sign_status.strerror)
-            self.quit()
+            return None
+
+        # consistently use the last key for details
+        EMAIL = parse_key(pubkey_loc, r':user ID packet: ".* <(.+?)>"\n')
+        if config.old_keyid:
+            compare_keys(KEYID_TRY, config.old_keyid)
+        self.print_result(self.package_path)
+        KEYID = KEYID_TRY
+        config.signature = self.key_url
+        config.config_opts['verify_required'] = True
+        config.rewrite_config_opts(os.path.dirname(self.package_path))
+        return True
 
 
 def quit_verify():
@@ -665,7 +676,7 @@ def attempt_key_import(keyid, key_fullpath):
     return False
 
 
-def parse_key(filename, pattern, verbose=True):
+def parse_key(filename, pattern, idx=0, verbose=True):
     """Parse gpg --list-packet signature for pattern, return first match."""
     args = ["gpg", "--list-packet", filename]
     try:
@@ -674,17 +685,20 @@ def parse_key(filename, pattern, verbose=True):
             print(err.decode('utf-8'))
             return None
         out = out.decode('utf-8')
-        match = re.search(pattern, out)
-        return match.group(1).strip() if match else None
+        match = re.findall(pattern, out)
+        if match and len(match) >= idx + 1:
+            return match[idx]
+        else:
+            return None
     except Exception:
         return None
     return None
 
 
-def get_keyid(sig_filename):
+def get_keyid(sig_filename, idx):
     """Get keyid from signature file and set global KEYID_TRY."""
     global KEYID_TRY
-    keyid = parse_key(sig_filename, r'keyid (.+?)\n')
+    keyid = parse_key(sig_filename, r'keyid (.+?)\n', idx=idx)
     KEYID_TRY = keyid
     return keyid.upper() if keyid else None
 
