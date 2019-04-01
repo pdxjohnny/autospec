@@ -23,6 +23,8 @@ import re
 import sys
 import tempfile
 
+sys.path.append(os.path.dirname(__file__))
+
 from abireport import examine_abi
 import build
 import buildpattern
@@ -42,8 +44,6 @@ import specdescription
 import specfiles
 import tarball
 from util import binary_in_path, print_fatal, print_infile, write_out
-
-sys.path.append(os.path.dirname(__file__))
 
 
 def add_sources(download_path, archives):
